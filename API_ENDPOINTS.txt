@@ -1,0 +1,173 @@
+Mini Task Management API - Endpoints and curl examples
+
+Base URL
+- http://localhost:3000
+
+Top-level endpoints
+- Users: /api/users
+- Projects: /api/projects
+- Tasks: /api/tasks
+- Simulated error: /simulate-error
+
+General notes
+- All requests and responses use JSON.
+- IDs are UUIDs.
+- Required fields produce 400 Bad Request when missing.
+- Conflicts produce 409 Conflict (e.g., duplicate email, deleting user with projects).
+- Not found -> 404.
+- Create -> 201, Delete successful -> 204 (no body).
+
+1) Users
+- POST /api/users
+  Body required: { "name": "...", "email": "..." }
+  201 -> created user JSON
+  400 -> missing fields
+  409 -> email already exists
+Example:
+curl -s -X POST http://localhost:3000/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Alice","email":"alice@example.com"}' | jq
+
+- GET /api/users
+  200 -> array of users
+curl -s http://localhost:3000/api/users | jq
+
+- GET /api/users/:id
+  200 -> user JSON
+  404 -> not found
+curl -s http://localhost:3000/api/users/<userId> | jq
+
+- PUT /api/users/:id
+  Body required: { "name": "...", "email": "..." }
+  200 -> updated user
+  400 -> missing fields
+  404 -> user not found
+  409 -> email used by another user
+curl -s -X PUT http://localhost:3000/api/users/<userId> \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Alice Smith","email":"alice@example.com"}' | jq
+
+- DELETE /api/users/:id
+  204 -> deleted
+  404 -> not found
+  409 -> conflict if user has projects
+curl -i -X DELETE http://localhost:3000/api/users/<userId>
+
+2) Projects
+- POST /api/projects
+  Body required: { "name": "...", "userId": "<userId>" }
+  201 -> created project
+  400 -> missing fields OR user does not exist
+curl -s -X POST http://localhost:3000/api/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Website","userId":"<userId>"}' | jq
+
+- GET /api/projects
+  200 -> array
+curl -s http://localhost:3000/api/projects | jq
+
+- GET /api/projects/:id
+  200 -> project JSON
+  404 -> not found
+curl -s http://localhost:3000/api/projects/<projectId> | jq
+
+- PUT /api/projects/:id
+  Body required: { "name":"...", "userId":"<userId>" }
+  200 -> updated
+  400 -> missing or user not exist
+  404 -> project not found
+curl -s -X PUT http://localhost:3000/api/projects/<projectId> \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Website V2","userId":"<userId>"}' | jq
+
+- DELETE /api/projects/:id
+  204 -> deleted (cascades: tasks belonging to this project are deleted)
+  404 -> project not found
+curl -i -X DELETE http://localhost:3000/api/projects/<projectId>
+
+3) Tasks
+- POST /api/tasks
+  Body required: { "title": "...", "projectId": "<projectId>", "description": "...", "status": "todo|in-progress|done" (optional) }
+  201 -> created task
+  400 -> missing fields OR project does not exist
+curl -s -X POST http://localhost:3000/api/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Design homepage","projectId":"<projectId>","description":"Initial wireframe"}' | jq
+
+- GET /api/tasks
+  200 -> array
+curl -s http://localhost:3000/api/tasks | jq
+
+- GET /api/tasks/:id
+  200 -> task JSON
+  404 -> not found
+curl -s http://localhost:3000/api/tasks/<taskId> | jq
+
+- PUT /api/tasks/:id
+  Body required: { "title":"...", "projectId":"<projectId>", "description":"...", "status":"..." }
+  200 -> updated
+  400 -> missing fields or non-existing project
+  404 -> task not found
+curl -s -X PUT http://localhost:3000/api/tasks/<taskId> \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Design hero","projectId":"<projectId>","description":"Hero section","status":"in-progress"}' | jq
+
+- DELETE /api/tasks/:id
+  204 -> deleted
+  404 -> not found
+curl -i -X DELETE http://localhost:3000/api/tasks/<taskId>
+
+4) Simulated server error (for testing global error handler)
+- GET /simulate-error
+  Always triggers a 500 Internal Server Error with a JSON error message
+curl -i http://localhost:3000/simulate-error
+
+Full example flow (bash) — exercises business rules and cascade delete
+# Requires jq for parsing
+USER_JSON=$(curl -s -X POST http://localhost:3000/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Bob","email":"bob@example.com"}')
+echo "User:" && echo "$USER_JSON" | jq
+USER_ID=$(echo "$USER_JSON" | jq -r '.id')
+
+PROJ_JSON=$(curl -s -X POST http://localhost:3000/api/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Demo Project","userId":"'"$USER_ID"'"}')
+echo "Project:" && echo "$PROJ_JSON" | jq
+PROJ_ID=$(echo "$PROJ_JSON" | jq -r '.id')
+
+TASK_JSON=$(curl -s -X POST http://localhost:3000/api/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Task 1","projectId":"'"$PROJ_ID"'","description":"Do it"}')
+echo "Task:" && echo "$TASK_JSON" | jq
+TASK_ID=$(echo "$TASK_JSON" | jq -r '.id')
+
+echo "Attempt delete user (expect 409):"
+curl -i -X DELETE http://localhost:3000/api/users/$USER_ID
+
+echo "Delete project (expect 204):"
+curl -i -X DELETE http://localhost:3000/api/projects/$PROJ_ID
+
+echo "Get deleted task (expect 404):"
+curl -i http://localhost:3000/api/tasks/$TASK_ID
+
+echo "Delete user (expect 204):"
+curl -i -X DELETE http://localhost:3000/api/users/$USER_ID
+
+Common test cases
+- Create a user twice -> second request yields 409
+curl -s -X POST http://localhost:3000/api/users -H "Content-Type: application/json" -d '{"name":"X","email":"dup@example.com"}' | jq
+curl -s -X POST http://localhost:3000/api/users -H "Content-Type: application/json" -d '{"name":"Y","email":"dup@example.com"}' -i
+
+- Create project with non-existent userId -> 400
+curl -s -X POST http://localhost:3000/api/projects -H "Content-Type: application/json" -d '{"name":"P","userId":"00000000-0000-0000-0000-000000000000"}' -i
+
+- Update or GET with invalid/non-existing ID -> 404
+curl -s http://localhost:3000/api/tasks/00000000-0000-0000-0000-000000000000 -i
+
+- Trigger 500
+curl -i http://localhost:3000/simulate-error
+
+Notes
+- Ensure the server is running at http://localhost:3000 before running these curl commands.
+- Replace placeholders like <userId>, <projectId>, <taskId> with actual IDs returned by the API.
